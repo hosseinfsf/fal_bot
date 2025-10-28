@@ -1,136 +1,87 @@
-# fal_bot.py
 import os
-import asyncio
-from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 import openai
-
-# وب‌سرور
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Text
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
+from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_KEY")
-DONATE_LINK = os.getenv("DONATE_LINK", "")
 
-if not TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN not set in .env")
-if not OPENAI_KEY:
-    raise RuntimeError("OPENAI_KEY not set in .env")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-openai.api_key = OPENAI_KEY
-
-bot = Bot(token=TOKEN)
+openai.api_key = OPENAI_API_KEY
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ماه‌ها ساده
-months = [
-    "فروردین","اردیبهشت","خرداد",
-    "تیر","مرداد","شهریور",
-    "مهر","آبان","آذر",
-    "دی","بهمن","اسفند"
-]
+# کیبورد اصلی
+keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton("فال امروز 🌞", callback_data="daily")],
+    [InlineKeyboardButton("فال هفتگی 🔮", callback_data="weekly")],
+    [InlineKeyboardButton("فال ماهانه 🌙", callback_data="monthly")],
+    [InlineKeyboardButton("💰 Donate", url="https://YOUR_CRYPTO_OR_PAYPAL_LINK")]
+])
 
-categories = ["روزانه","هفتگی","ماهانه","عشق","قهوه","تاروت"]
-
-# منوی ساده
-async def cmd_start(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[[types.KeyboardButton(text=cat) for cat in categories[i:i+3]] for i in range(0, len(categories), 3)],
-        resize_keyboard=True
+async def generate_horoscope(horoscope_type: str, month: int):
+    prompt = f"یک فال {horoscope_type} برای ماه {month} به فارسی با حداقل ۷ خط، emoji و هشتگ بساز."
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role":"user","content":prompt}],
+        max_tokens=300
     )
-    await message.answer("سلام! یک دسته را انتخاب کنید:", reply_markup=keyboard)
+    return response.choices[0].message.content.strip()
 
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    await cmd_start(message)
+@dp.message(commands=["start"])
+async def start(msg: types.Message):
+    # کلید انتخاب ماه
+    month_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(str(i), callback_data=f"month_{i}") for i in range(1, 4)],
+        [InlineKeyboardButton(str(i), callback_data=f"month_{i}") for i in range(4, 7)],
+        [InlineKeyboardButton(str(i), callback_data=f"month_{i}") for i in range(7, 10)],
+        [InlineKeyboardButton(str(i), callback_data=f"month_{i}") for i in range(10, 13)],
+    ])
+    await msg.answer("سلام! ماه تولدتو انتخاب کن 🌟", reply_markup=month_keyboard)
 
-# انتخاب دسته
-@dp.message(lambda m: m.text in categories)
-async def choose_category(message: types.Message):
-    # ذخیره دسته در session ساده (این روش محدود هست؛ برای پرو덕شن از FSM استفاده کن)
-    message.chat_data = getattr(message, "chat_data", {})
-    message.chat_data["category"] = message.text
-    # منوی ماه‌ها
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for i in range(0, 12, 3):
-        kb.row(*[types.KeyboardButton(months[j]) for j in range(i, i+3)])
-    kb.add(types.KeyboardButton(text="بازگشت"))
-    await message.answer("ماه تولد را انتخاب کنید:", reply_markup=kb)
+# دریافت ماه
+@dp.callback_query(Text(startswith="month_"))
+async def month_selected(query: types.CallbackQuery):
+    month = int(query.data.split("_")[1])
+    await query.message.answer(f"ماه {month} انتخاب شد! حالا فال مورد نظر رو انتخاب کن:", reply_markup=keyboard)
+    await query.answer()
 
-# تولید فال از OpenAI (نمونه ساده)
-async def generate_horoscope(month_name: str, category: str) -> str:
-    prompt = (
-        f"یک فال {category} برای ماه {month_name} به زبان فارسی بنویس. "
-        "حداقل 7 خط، شامل ایموجی و 2-4 هشتگ و لحن مثبت و شاعرانه."
-    )
-    try:
-        resp = await openai.ChatCompletion.acreate(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.8,
-            max_tokens=450
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        # بازگشت متن جایگزین در صورت خطا
-        return f"⚠️ خطا در دریافت فال از سرویس هوش‌مصنوعی.\nاین یک فال پیش‌فرض برای {month_name} است.\n\n🌟 امروز فرصتی برای شروع دوباره داری...\n#فال #آغاز"
+# فال روزانه
+@dp.callback_query(Text("daily"))
+async def daily(query: types.CallbackQuery):
+    text = await generate_horoscope("روزانه", month=1)  # می‌تونیم ماه رو ذخیره کنیم
+    await query.message.answer(text)
+    await query.answer()
 
-# انتخاب ماه و ارسال فال
-@dp.message(lambda m: m.text in months)
-async def choose_month(message: types.Message):
-    month = message.text
-    # تلاش برای پیدا کردن category ذخیره شده؛ اگر نبود روزانه در نظر گرفته میشه
-    category = getattr(message, "chat_data", {}).get("category", "روزانه")
-    await message.answer("در حال آماده‌سازی فال... ⏳")
-    text = await generate_horoscope(month, category)
-    # ارسال عکس آنلاین (در صورت نیاز)
-    # لینک های نمونه:
-    image_links = [
-        f"https://katisgallery.ir/wp-content/uploads/2024/09/birth-signs-symbols-katisgallery-{i}.jpg"
-        for i in range(1,13)
-    ]
-    idx = months.index(month)
-    photo = image_links[idx]
-    # دکمه Donate
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(types.KeyboardButton(text="💎 حمایت با کریپتو"))
-    await message.answer_photo(photo=photo, caption=text, reply_markup=kb)
+# فال هفتگی
+@dp.callback_query(Text("weekly"))
+async def weekly(query: types.CallbackQuery):
+    text = await generate_horoscope("هفتگی", month=1)
+    await query.message.answer(text)
+    await query.answer()
 
-@dp.message(lambda m: m.text == "بازگشت")
-async def back(message: types.Message):
-    await cmd_start(message)
+# فال ماهانه
+@dp.callback_query(Text("monthly"))
+async def monthly(query: types.CallbackQuery):
+    text = await generate_horoscope("ماهانه", month=1)
+    await query.message.answer(text)
+    await query.answer()
 
-@dp.message(lambda m: m.text == "💎 حمایت با کریپتو")
-async def donate_handler(message: types.Message):
-    link = DONATE_LINK or "https://your-crypto-link.com"
-    await message.answer(f"برای حمایت، این لینک را استفاده کنید:\n{link}")
+# Webhook
+async def handle(request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.process_update(update)
+    return web.Response()
 
-# ---- وب‌سرور خیلی ساده برای health check ----
-async def handle_root(request):
-    return web.Response(text="OK")
-
-async def start_aiohttp_server():
-    app = web.Application()
-    app.router.add_get("/", handle_root)
-    port = int(os.getenv("PORT", "10000"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"Health server started on port {port}")
-
-# ---- main: اجرا همزمان وب‌سرور و polling ----
-async def main():
-    # استارت وب‌سرور
-    await start_aiohttp_server()
-    # استارت polling
-    print("Starting bot polling...")
-    await dp.start_polling(bot)
+app = web.Application()
+app.router.add_post(f"/{BOT_TOKEN}", handle)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Exiting...")
+    web.run_app(app, host="0.0.0.0", port=PORT)
